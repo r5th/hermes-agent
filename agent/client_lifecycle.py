@@ -751,8 +751,9 @@ class ClientLifecycleMixin:
         ):
             return False
         try:
-            from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token()
+            from agent.credential_source import AnthropicCredentialSource
+            cred = AnthropicCredentialSource().refresh()
+            new_token = cred.api_key if cred else None
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False

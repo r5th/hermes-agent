@@ -2803,21 +2803,23 @@ def _try_azure_foundry(
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token
+        from agent.credential_source import AnthropicCredentialSource
     except ImportError:
         return None, None
-    pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present and entry is not None:
-        token = explicit_api_key or _pool_runtime_api_key(entry)
-    else:
-        # Pool absent/empty: legacy resolver so a dead pool entry can't wedge aux tasks when a standalone credential exists.
-        entry = None
-        token = explicit_api_key or resolve_anthropic_token()
+    # Credential acquisition (pool-first, legacy fallback) is owned by the
+    # anthropic Credential source (ADR-0002) — the pool-vs-legacy branch and its
+    # base_url selection used to be hand-coded here. An explicit override still
+    # wins, over the resolved credential's base_url (the pool entry's, or the default).
+    try:
+        cred = AnthropicCredentialSource().resolve()
+    except ImportError:
+        return None, None
+    token = explicit_api_key or (cred.api_key if cred else "")
     if not token:
         return None, None
     # Honor config.yaml model.base_url only when provider is anthropic AND the URL is
     # Anthropic-compatible; a foreign host (Codex, OpenRouter) would 401 every aux call.
-    base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
+    base_url = cred.base_url if cred else _ANTHROPIC_DEFAULT_BASE_URL
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
@@ -3420,12 +3422,12 @@ def _refresh_nous_credentials() -> bool:
 
 
 def _refresh_anthropic_credentials() -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token, resolve_anthropic_token
-    creds = read_claude_code_credentials()
-    token = _refresh_oauth_token(creds) if isinstance(creds, dict) and creds.get("refreshToken") else None
-    if not str(token or "").strip():
-        token = resolve_anthropic_token()
-    return bool(str(token or "").strip())
+    # FORCE refresh (aux 401 recovery): rotate even a not-yet-expired token.
+    # Owned by the anthropic Credential source (ADR-0002); refresh(force=True)
+    # does the pool force with a legacy single-use OAuth fallback.
+    from agent.credential_source import AnthropicCredentialSource
+    cred = AnthropicCredentialSource().refresh(force=True)
+    return bool(cred and str(cred.api_key or "").strip())
 
 
 def _refresh_xai_oauth_credentials() -> bool:
