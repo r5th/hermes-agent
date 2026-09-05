@@ -422,3 +422,17 @@ Long-form background lives in `website/docs/developer-guide/` (agent-loop, promp
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,
 session-storage, ...). Workflow rules (PR/issue/review/salvage process) live in the
 `hermes-agent-dev` skill, not here.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked as **GitHub issues** (`gh` CLI), inferred from `git remote`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+**Multi-context**: root `CONTEXT-MAP.md` points at per-context `CONTEXT.md` files; ADRs under `docs/adr/` and per-context `docs/adr/`. See `docs/agents/domain.md`.
