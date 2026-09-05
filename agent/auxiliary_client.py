@@ -1947,38 +1947,12 @@ def _creds_pair(creds: Dict[str, Any]) -> Optional[Tuple[str, str]]:
 
 
 def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
-    """Fresh xAI OAuth (api_key, base_url) for aux clients, or None.
-
-    Pool first (some xAI OAuth logins exist only as pool entries), then the singleton auth-store resolver.
-    """
-    try:
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
-        pool = load_pool("xai-oauth")
-        if pool and pool.has_credentials():
-            entry = pool.select()
-            if entry is not None:
-                api_key = str(
-                    getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "") or ""
-                ).strip()
-                _url = lambda v: str(v or "").strip().rstrip("/")  # noqa: E731
-                base_url = _xai_validate_inference_base_url(
-                    _url(os.getenv("HERMES_XAI_BASE_URL", ""))
-                    or _url(os.getenv("XAI_BASE_URL", ""))
-                    or _url(getattr(entry, "runtime_base_url", None))
-                    or _url(getattr(entry, "base_url", None)),
-                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
-                )
-                if api_key and base_url:
-                    return api_key, base_url
-    except Exception as exc:
-        logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
-    try:
-        from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
-        creds = resolve_xai_oauth_runtime_credentials()
-    except Exception as exc:
-        logger.debug("Auxiliary xAI OAuth runtime credential resolution failed: %s", exc)
-        return None
-    return _creds_pair(creds)
+    """Fresh xAI OAuth (api_key, base_url) for aux clients, or None. Thin shim
+    over XaiOAuthCredentialSource (ADR-0002), which owns the pool-first / runtime
+    resolver selection and the base_url override + validation."""
+    from agent.credential_source import XaiOAuthCredentialSource
+    cred = XaiOAuthCredentialSource().resolve()
+    return (cred.api_key, cred.base_url) if cred else None
 
 
 def _read_codex_access_token() -> Optional[str]:
@@ -2726,15 +2700,11 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    codex_token = _pool_runtime_api_key(entry) if pool_present else None
-    if codex_token:
-        base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = _CODEX_AUX_BASE_URL
+    from agent.credential_source import CodexCredentialSource
+    cred = CodexCredentialSource().resolve()
+    if cred is None:
+        return None, None
+    codex_token, base_url = cred.api_key, cred.base_url
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token, base_url=base_url,
@@ -3410,8 +3380,11 @@ def _refresh_copilot_credentials() -> bool:
 
 
 def _refresh_codex_credentials() -> bool:
-    from hermes_cli.auth import resolve_codex_runtime_credentials
-    return _creds_have_api_key(resolve_codex_runtime_credentials(force_refresh=True))
+    # FORCE refresh (aux 401 recovery), owned by the codex Credential source
+    # (ADR-0002); refresh(force=True) does pool force + legacy runtime resolver.
+    from agent.credential_source import CodexCredentialSource
+    cred = CodexCredentialSource().refresh(force=True)
+    return bool(cred and str(cred.api_key or "").strip())
 
 
 def _refresh_nous_credentials() -> bool:
@@ -3431,15 +3404,11 @@ def _refresh_anthropic_credentials() -> bool:
 
 
 def _refresh_xai_oauth_credentials() -> bool:
-    """Pool-level refresh first, then the singleton auth-store resolver."""
-    pool = load_pool("xai-oauth")
-    if pool and pool.has_credentials():
-        pool.select()
-        refreshed = pool.try_refresh_current()
-        if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
-            return True
-    from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
-    return _creds_have_api_key(resolve_xai_oauth_runtime_credentials(force_refresh=True))
+    # FORCE refresh (aux 401 recovery), owned by the xai-oauth Credential source
+    # (ADR-0002); refresh(force=True) does pool force + legacy runtime resolver.
+    from agent.credential_source import XaiOAuthCredentialSource
+    cred = XaiOAuthCredentialSource().refresh(force=True)
+    return bool(cred and str(cred.api_key or "").strip())
 
 
 def _refresh_vertex_credentials() -> bool:
