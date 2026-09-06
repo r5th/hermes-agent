@@ -160,3 +160,75 @@ def test_xai_force_rotates_pool_token(monkeypatch):
     assert cred is not None
     assert cred.api_key == "xai-rotated"
     assert cred.provenance == "pool"
+
+
+# ── reactive singleton refresh (main-path 401 recovery, ADR-0002 cut 3) ───────
+# Singleton-only, NOT pool-force-first: rotate the device_code singleton's token
+# only when it is the credential currently in use, guarding against a silent
+# mid-conversation account swap. Drives the runtime resolver directly (the same
+# auth-store seam the old hand-coded _try_refresh_codex_client_credentials used).
+
+
+def test_codex_reactive_refresh_rotates_when_active_is_singleton(monkeypatch):
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        # Peek (refresh_if_expiring=False) sees the active token; the force mints a new one.
+        return {
+            "api_key": "codex-rotated" if force_refresh else "codex-active",
+            "base_url": CODEX_DEFAULT_BASE_URL,
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_codex_runtime_credentials", _fake_resolve)
+
+    cred = CodexCredentialSource().reactive_singleton_refresh("codex-active")
+
+    assert cred is not None
+    assert cred.api_key == "codex-rotated"
+    assert cred.base_url == CODEX_DEFAULT_BASE_URL
+    assert cred.provenance == "legacy"
+
+
+def test_xai_reactive_refresh_rotates_when_active_is_singleton(monkeypatch):
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        return {
+            "api_key": "xai-rotated" if force_refresh else "xai-active",
+            "base_url": XAI_OAUTH_DEFAULT_BASE_URL,
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_xai_oauth_runtime_credentials", _fake_resolve)
+
+    cred = XaiOAuthCredentialSource().reactive_singleton_refresh("xai-active")
+
+    assert cred is not None
+    assert cred.api_key == "xai-rotated"
+
+
+def test_reactive_refresh_skips_when_active_differs_from_singleton(monkeypatch):
+    """Account-swap guard: a non-singleton active credential must NOT rotate the
+    singleton — that would spend its single-use refresh token and silently swap
+    accounts mid-conversation. The force resolver must never run."""
+    force_calls = {"count": 0}
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            force_calls["count"] += 1
+        return {"api_key": "singleton-account-token", "base_url": XAI_OAUTH_DEFAULT_BASE_URL}
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_xai_oauth_runtime_credentials", _fake_resolve)
+
+    cred = XaiOAuthCredentialSource().reactive_singleton_refresh("a-different-pool-token")
+
+    assert cred is None
+    assert force_calls["count"] == 0
+
+
+def test_reactive_refresh_none_when_no_new_token_minted(monkeypatch):
+    """The runtime resolver returns the same stale token when a refresh fails
+    silently — no NEW material to adopt, so the source reports nothing."""
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda **_: {"api_key": "codex-active", "base_url": CODEX_DEFAULT_BASE_URL},
+    )
+
+    cred = CodexCredentialSource().reactive_singleton_refresh("codex-active")
+
+    assert cred is None

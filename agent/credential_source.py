@@ -181,8 +181,50 @@ class _SingleUseOAuthCredentialSource(CredentialSource):
                 )
         return self._legacy_force_credential()
 
+    def reactive_singleton_refresh(
+        self, active_api_key: str, *, force: bool = True
+    ) -> Optional[Credential]:
+        """Main-path 401 recovery for the singleton-only case (ADR-0002): rotate
+        the device_code singleton's token, but ONLY when it is the credential
+        currently in use. A non-singleton active credential (a manual pool entry
+        or an explicit ``api_key=``) must not silently adopt the singleton's
+        tokens mid-conversation — the pool owns reactive recovery for those, and
+        rotating here would spend the singleton's single-use refresh token for an
+        account the agent wasn't even using.
+
+        Deliberately singleton-only (via the auth-store runtime resolver), NOT
+        the pool-force-first path of ``refresh(force=True)``. Returns fresh
+        material only when a NEW token was minted, else ``None``."""
+        resolve = self._runtime_resolver()
+        active = str(active_api_key or "").strip()
+        try:
+            singleton_now = resolve(refresh_if_expiring=False)
+        except Exception:
+            return None
+        singleton_key = str((singleton_now or {}).get("api_key") or "").strip()
+        if singleton_key and active and singleton_key != active:
+            # Active credential isn't the singleton: skip to avoid a silent account swap.
+            return None
+        try:
+            creds = resolve(force_refresh=force)
+        except Exception:
+            return None
+        cred = self._credential_from_runtime(creds)
+        if cred is None:
+            return None
+        # No NEW token minted (the resolver returns the same stale token when a
+        # refresh fails silently) → nothing to adopt.
+        if active and cred.api_key.strip() == active:
+            return None
+        return cred
+
     # ── per-provider hooks ──
     def _pool_base_url(self, entry) -> str:
+        raise NotImplementedError
+
+    def _runtime_resolver(self):
+        """The auth-store runtime resolver callable for this provider, resolved
+        at call time so tests can monkeypatch ``hermes_cli.auth``."""
         raise NotImplementedError
 
     def _legacy_credential(self) -> Optional[Credential]:
@@ -211,6 +253,11 @@ class CodexCredentialSource(_SingleUseOAuthCredentialSource):
         from agent.auxiliary_client import _pool_runtime_base_url
 
         return _pool_runtime_base_url(entry, self.DEFAULT_BASE_URL) or self.DEFAULT_BASE_URL
+
+    def _runtime_resolver(self):
+        from hermes_cli import auth as _auth
+
+        return _auth.resolve_codex_runtime_credentials
 
     def _legacy_credential(self) -> Optional[Credential]:
         # Reuses the aux reader (auth.json tokens + JWT-expiry skip); base_url is
@@ -249,6 +296,11 @@ class XaiOAuthCredentialSource(_SingleUseOAuthCredentialSource):
             or _url(getattr(entry, "base_url", None)),
             fallback=DEFAULT_XAI_OAUTH_BASE_URL,
         )
+
+    def _runtime_resolver(self):
+        from hermes_cli import auth as _auth
+
+        return _auth.resolve_xai_oauth_runtime_credentials
 
     def _legacy_credential(self) -> Optional[Credential]:
         from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
