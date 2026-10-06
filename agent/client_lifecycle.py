@@ -490,39 +490,22 @@ class ClientLifecycleMixin:
     def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
         if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
             return False
-        # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
-        # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
+        # Acquisition + the singleton account-swap guard are owned by the codex/xai-oauth
+        # Credential source (ADR-0002); it rotates only when the active credential IS the
+        # device_code singleton (a manual pool entry / explicit api_key= must not silently
+        # adopt the singleton — the pool owns that reactive recovery). We only rebuild the client.
         try:
-            from hermes_cli import auth as _auth
-            resolve = (
-                _auth.resolve_codex_runtime_credentials if self.provider == "openai-codex"
-                else _auth.resolve_xai_oauth_runtime_credentials
-            )
-            singleton_now = resolve(refresh_if_expiring=False)
-        except Exception as exc:
-            logger.debug("%s singleton read failed: %s", self.provider, exc)
-            return False
-        singleton_key = str(singleton_now.get("api_key") or "").strip()
-        old_key = str(self.api_key or "").strip()
-        if singleton_key and old_key and singleton_key != old_key:
-            logger.debug(
-                "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
-                "silent account swap. Reactive credential rotation should go through the pool.", self.provider,
-            )
-            return False
-        try:
-            creds = resolve(force_refresh=force)
+            from agent.credential_source import CodexCredentialSource, XaiOAuthCredentialSource
+            source = CodexCredentialSource() if self.provider == "openai-codex" else XaiOAuthCredentialSource()
+            cred = source.reactive_singleton_refresh(self.api_key or "", force=force)
         except Exception as exc:
             logger.debug("%s credential refresh failed: %s", self.provider, exc)
             return False
-        api_key, base_url = creds.get("api_key"), creds.get("base_url")
-        if not _valid_credential_pair(api_key, base_url):
+        if cred is None:
             return False
-        # No NEW token minted (the resolver returns the same stale token when refresh fails) → False.
-        if old_key and api_key.strip() == old_key:
-            logger.debug("%s credential refresh returned the same token; refresh likely failed silently", self.provider)
+        if not _valid_credential_pair(cred.api_key, cred.base_url):
             return False
-        return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
+        return self._adopt_openai_credentials(cred.api_key, cred.base_url, reason=f"{self.provider}_credential_refresh")
 
     def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
         # Portal serves anthropic/* on the native Messages route, so either client kind may hold the expiring JWT.
@@ -751,8 +734,9 @@ class ClientLifecycleMixin:
         ):
             return False
         try:
-            from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token()
+            from agent.credential_source import AnthropicCredentialSource
+            cred = AnthropicCredentialSource().refresh()
+            new_token = cred.api_key if cred else None
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False
