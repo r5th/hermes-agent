@@ -435,4 +435,4 @@ The five canonical triage roles, each label string equal to its name. See `docs/
 
 ### Domain docs
 
-**Multi-context**: root `CONTEXT-MAP.md` points at per-context `CONTEXT.md` files; ADRs under `docs/adr/` and per-context `docs/adr/`. See `docs/agents/domain.md`.
+**Multi-context**: root `GLOSSARY-MAP.md` points at per-context `GLOSSARY.md` files; ADRs under `docs/adr/` and per-context `docs/adr/`. See `docs/agents/domain.md`.

@@ -3,7 +3,7 @@
 ADR-0002 consolidates the smeared per-provider credential logic behind a
 ``CredentialSource`` ABC returning a ``Credential`` value object that hides
 whether the material came from the pool or a legacy resolver. This is the
-first strangler cut — anthropic only. See ``agent/CONTEXT.md`` for the
+first strangler cut — anthropic only. See ``agent/GLOSSARY.md`` for the
 vocabulary (Credential, Credential source, Credential resolution, Credential
 pool) and ``agent/docs/adr/0002`` for the boundary: a source owns credential
 *acquisition and refresh only*; SDK client construction stays in
